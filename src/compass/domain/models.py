@@ -5,6 +5,10 @@ from uuid import UUID
 import pydantic
 
 
+def utc_now() -> datetime.datetime:
+    return datetime.datetime.now(datetime.UTC)
+
+
 class DomainModel(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
 
@@ -166,3 +170,20 @@ class RecommendationGroup(DomainModel):
     recommendations: list[Recommendation]
     as_of: datetime.datetime
     feedback: RecommendationGroupFeedback = RecommendationGroupFeedback.UNANSWERED
+
+
+class CacheFile(DomainModel):
+    creation_date: pydantic.AwareDatetime = pydantic.Field(default_factory=utc_now)
+    update_date: pydantic.AwareDatetime = pydantic.Field(default_factory=utc_now)
+
+    def is_stale(self, stale_after: datetime.timedelta) -> bool:
+        return self.update_date < utc_now() - stale_after
+
+
+class PersonalTopicsFile(CacheFile):
+    github_handle: str
+    topics_frequency: list[tuple[str, int]]
+
+
+class ProjectTopicsFile(CacheFile):
+    projects: list[TopicProject]

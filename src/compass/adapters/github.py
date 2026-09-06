@@ -1,15 +1,13 @@
 import logging
 from collections.abc import Iterator
-from typing import TypedDict
+from typing import Any, TypedDict
 
-from dotenv import load_dotenv
-from selectolax.parser import HTMLParser, Node
+from githubkit import GitHub
 
 logger = logging.getLogger(__name__)
 
 GITHUB_API = "https://api.github.com"
 GITHUB_GRAPHQL_API = "https://api.github.com/graphql"
-GITHUB_WEB = "https://github.com"
 
 REPOS_PER_PAGE = 100
 
@@ -19,62 +17,102 @@ class TopicRepoRecord(TypedDict):
     name: str
     url: str
     description: str | None
+    stars: int
+    forks: int
     language: str | None
     topics: list[str]
     updated_at: str | None
 
 
-def build_headers(token: str) -> dict[str, str]:
-    return {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {token}",
-        "X-GitHub-Api-Version": "2022-11-28",
+REPOSITORY_FRAGMENT = """
+fragment RepositoryFields on Repository {
+  owner {
+    login
+  }
+  name
+  url
+  description
+  stargazerCount
+  forkCount
+  primaryLanguage {
+    name
+  }
+  repositoryTopics(first: 100) {
+    nodes {
+      topic {
+        name
+      }
     }
+  }
+  updatedAt
+}
+"""
+
+USER_REPOS_QUERY = (
+    REPOSITORY_FRAGMENT
+    + """
+query ($login: String!, $cursor: String) {
+  user(login: $login) {
+    repositories(first: 100, after: $cursor, ownerAffiliations: OWNER) {
+      nodes {
+        ...RepositoryFields
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+"""
+)
+
+TOPIC_REPOS_QUERY = (
+    REPOSITORY_FRAGMENT
+    + """
+query ($topic: String!, $cursor: String) {
+  topic(name: $topic) {
+    repositories(
+      first: 100
+      after: $cursor
+      orderBy: {field: STARGAZERS, direction: DESC}
+    ) {
+      nodes {
+        ...RepositoryFields
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+"""
+)
 
 
-def parse_topic_article(article: Node) -> TopicRepoRecord | None:
-    heading = article.css_first("h3")
-
-    if heading is None:
-        return None
-
-    repo_links = heading.css("a")
-
-    if len(repo_links) < 2:
-        return None
-
-    repo_link = repo_links[-1]
-    href = repo_link.attributes.get("href")
-
-    if not href:
-        return None
-
-    description_node = article.css_first("p.color-fg-muted")
-    language_node = article.css_first('[itemprop="programmingLanguage"]')
-    updated_node = article.css_first("relative-time")
+def build_topic_repo_record(node: dict[str, Any]) -> TopicRepoRecord:
+    language = node["primaryLanguage"]
+    topic_nodes = node["repositoryTopics"]["nodes"]
 
     return TopicRepoRecord(
-        owner=repo_links[0].text(strip=True),
-        name=repo_link.text(strip=True),
-        url=f"{GITHUB_WEB}{href}",
-        description=(description_node.text(strip=True) if description_node else None),
-        language=(language_node.text(strip=True) if language_node else None),
-        topics=[node.text(strip=True) for node in article.css("a.topic-tag")],
-        updated_at=(updated_node.attributes.get("datetime") if updated_node else None),
+        owner=node["owner"]["login"],
+        name=node["name"],
+        url=node["url"],
+        description=node["description"],
+        stars=node["stargazerCount"],
+        forks=node["forkCount"],
+        language=language["name"] if language else None,
+        topics=[entry["topic"]["name"] for entry in topic_nodes],
+        updated_at=node["updatedAt"],
     )
 
 
-def parse_topic_page(tree: HTMLParser) -> list[TopicRepoRecord]:
-    records = (parse_topic_article(article) for article in tree.css("article"))
-
-    return [record for record in records if record is not None]
-
-
 class GitHubClient:
-    def __init__(self, token: str | None = None, timeout: float = 30) -> None:
-        load_dotenv()
+    def __init__(self, token: str, timeout: float = 30) -> None:
         self.token = token
         self.timeout = timeout
+        self.github = GitHub(token, timeout=timeout)
 
     def __enter__(self) -> "GitHubClient":
         return self
@@ -82,18 +120,54 @@ class GitHubClient:
     def __exit__(self, *exc_info: object) -> None:
         return None
 
-    def iter_user_repos(
+    def iter_repositories(
         self,
-        github_handle: str,
+        query: str,
+        variables: dict[str, Any],
+        container: str,
+        max_pages: int,
     ) -> Iterator[list[TopicRepoRecord]]:
-        raise NotImplementedError
+        cursor: str | None = None
+
+        for _ in range(max_pages):
+            data = self.github.graphql(query, {**variables, "cursor": cursor})
+            container_data = data[container]
+
+            if container_data is None:
+                return
+
+            repositories = container_data["repositories"]
+
+            yield [build_topic_repo_record(node) for node in repositories["nodes"]]
+
+            page_info = repositories["pageInfo"]
+
+            if not page_info["hasNextPage"]:
+                return
+
+            cursor = page_info["endCursor"]
+
+    def user_repos(self, github_handle: str, max_pages: int = 5) -> list[TopicRepoRecord]:
+        records: list[TopicRepoRecord] = []
+
+        for page in self.iter_repositories(
+            query=USER_REPOS_QUERY,
+            variables={"login": github_handle},
+            container="user",
+            max_pages=max_pages,
+        ):
+            records.extend(page)
+
+        return records
 
     def iter_topic_repos(
         self,
         topic: str,
         max_pages: int = 5,
     ) -> Iterator[list[TopicRepoRecord]]:
-        raise NotImplementedError
-
-    def get_repo_stats(self, owner: str, name: str) -> tuple[int, int]:
-        raise NotImplementedError
+        yield from self.iter_repositories(
+            query=TOPIC_REPOS_QUERY,
+            variables={"topic": topic},
+            container="topic",
+            max_pages=max_pages,
+        )

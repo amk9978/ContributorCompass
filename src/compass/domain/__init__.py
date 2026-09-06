@@ -1,8 +1,11 @@
 from .models import (
     Bucket,
     BucketThresholds,
+    CacheFile,
     Evaluation,
+    PersonalTopicsFile,
     ProjectIssue,
+    ProjectTopicsFile,
     Recommendation,
     RecommendationFeedback,
     RecommendationGroup,
@@ -13,8 +16,11 @@ from .models import (
 __all__ = [
     "Bucket",
     "BucketThresholds",
+    "CacheFile",
     "Evaluation",
+    "PersonalTopicsFile",
     "ProjectIssue",
+    "ProjectTopicsFile",
     "Recommendation",
     "RecommendationFeedback",
     "RecommendationGroup",
