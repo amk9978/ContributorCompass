@@ -11,7 +11,6 @@ GITHUB_GRAPHQL_API = "https://api.github.com/graphql"
 
 REPOS_PER_PAGE = 100
 SEARCH_RESULT_LIMIT = 1000
-MAX_SEARCH_PAGES = SEARCH_RESULT_LIMIT // REPOS_PER_PAGE
 
 
 class TopicRepoRecord(TypedDict):
@@ -87,6 +86,15 @@ query ($searchQuery: String!, $cursor: String) {
 )
 
 
+def topic_search_query(topic: str, star_ceiling: int | None = None) -> str:
+    query = f"topic:{topic} sort:stars-desc"
+
+    if star_ceiling is None:
+        return query
+
+    return f"{query} stars:<={star_ceiling}"
+
+
 def build_topic_repo_record(node: dict[str, Any]) -> TopicRepoRecord:
     language = node["primaryLanguage"]
     topic_nodes = node["repositoryTopics"]["nodes"]
@@ -116,6 +124,22 @@ class GitHubClient:
     def __exit__(self, *exc_info: object) -> None:
         return None
 
+    def fetch_connection(
+        self,
+        query: str,
+        variables: dict[str, Any],
+        connection_path: tuple[str, ...],
+    ) -> Any:
+        connection: Any = self.github.graphql(query, variables)
+
+        for key in connection_path:
+            if connection is None:
+                return None
+
+            connection = connection[key]
+
+        return connection
+
     def iter_repositories(
         self,
         query: str,
@@ -126,13 +150,11 @@ class GitHubClient:
         cursor: str | None = None
 
         for _ in range(max_pages):
-            connection: Any = self.github.graphql(query, {**variables, "cursor": cursor})
-
-            for key in connection_path:
-                if connection is None:
-                    return
-
-                connection = connection[key]
+            connection = self.fetch_connection(
+                query=query,
+                variables={**variables, "cursor": cursor},
+                connection_path=connection_path,
+            )
 
             if connection is None:
                 return
@@ -164,9 +186,40 @@ class GitHubClient:
         topic: str,
         max_pages: int = 5,
     ) -> Iterator[list[TopicRepoRecord]]:
-        yield from self.iter_repositories(
-            query=TOPIC_REPOS_QUERY,
-            variables={"searchQuery": f"topic:{topic} sort:stars-desc"},
-            connection_path=("search",),
-            max_pages=max_pages,
-        )
+        star_ceiling: int | None = None
+        cursor: str | None = None
+        pages_yielded = 0
+
+        while pages_yielded < max_pages:
+            connection = self.fetch_connection(
+                query=TOPIC_REPOS_QUERY,
+                variables={
+                    "searchQuery": topic_search_query(topic=topic, star_ceiling=star_ceiling),
+                    "cursor": cursor,
+                },
+                connection_path=("search",),
+            )
+
+            if connection is None or not connection["nodes"]:
+                return
+
+            pages_yielded += 1
+            records = [build_topic_repo_record(node) for node in connection["nodes"]]
+            yield records
+
+            page_info = connection["pageInfo"]
+
+            if page_info["hasNextPage"]:
+                cursor = page_info["endCursor"]
+                continue
+
+            next_ceiling = min(record["stars"] for record in records)
+
+            if star_ceiling is not None and next_ceiling >= star_ceiling:
+                return
+
+            logger.debug(
+                "Topic %s exhausted a search window, continuing below %s stars", topic, next_ceiling
+            )
+            star_ceiling = next_ceiling
+            cursor = None
