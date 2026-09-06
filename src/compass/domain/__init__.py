@@ -2,6 +2,7 @@ from .models import (
     Bucket,
     BucketThresholds,
     CacheFile,
+    CollectionStop,
     Evaluation,
     PersonalTopicsFile,
     ProjectIssue,
@@ -10,6 +11,7 @@ from .models import (
     RecommendationFeedback,
     RecommendationGroup,
     RecommendationGroupFeedback,
+    TopicCollection,
     TopicProject,
 )
 
@@ -17,6 +19,7 @@ __all__ = [
     "Bucket",
     "BucketThresholds",
     "CacheFile",
+    "CollectionStop",
     "Evaluation",
     "PersonalTopicsFile",
     "ProjectIssue",
@@ -25,5 +28,6 @@ __all__ = [
     "RecommendationFeedback",
     "RecommendationGroup",
     "RecommendationGroupFeedback",
+    "TopicCollection",
     "TopicProject",
 ]

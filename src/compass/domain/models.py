@@ -180,10 +180,24 @@ class CacheFile(DomainModel):
         return self.update_date < utc_now() - stale_after
 
 
+class CollectionStop(StrEnum):
+    SATURATED = "saturated"
+    STAR_FLOOR = "star_floor"
+    DEFAULT_DEPTH = "default_depth"
+    PAGE_BUDGET = "page_budget"
+    EXHAUSTED = "exhausted"
+
+
+class TopicCollection(DomainModel):
+    projects: list[TopicProject]
+    stop_reason: CollectionStop
+    pages_fetched: int
+
+
 class PersonalTopicsFile(CacheFile):
     github_handle: str
     topics_frequency: list[tuple[str, int]]
 
 
-class ProjectTopicsFile(CacheFile):
-    projects: list[TopicProject]
+class ProjectTopicsFile(CacheFile, TopicCollection):
+    pass

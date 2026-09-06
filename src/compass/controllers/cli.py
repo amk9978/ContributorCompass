@@ -22,8 +22,6 @@ PROJECT_TOPICS_STALE_AFTER = datetime.timedelta(days=7)
 PERSONAL_TOPICS_REFRESH_AFTER = datetime.timedelta(days=25)
 PROJECT_TOPICS_REFRESH_AFTER = datetime.timedelta(days=5)
 
-TOPIC_MAX_PAGES = 2
-
 
 def resolve_github_token() -> str:
     load_dotenv()
@@ -133,13 +131,18 @@ def collect_project_topics(
 
     typer.echo(f"Fetching projects for {topic}...")
 
-    projects = get_topic_projects(
-        topic=topic,
-        github=github,
-        max_pages=TOPIC_MAX_PAGES,
+    collection = get_topic_projects(topic=topic, github=github)
+    project_topics = ProjectTopicsFile(
+        projects=collection.projects,
+        stop_reason=collection.stop_reason,
+        pages_fetched=collection.pages_fetched,
     )
-    project_topics = ProjectTopicsFile(projects=projects)
     write_cache_file(project_topics, file_path)
+
+    typer.echo(
+        f"  {topic}: {len(collection.projects)} projects, "
+        f"{collection.pages_fetched} pages, stopped on {collection.stop_reason}"
+    )
 
     return project_topics
 

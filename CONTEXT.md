@@ -96,8 +96,8 @@ identity whenever the source permits.
 
 ## Collection constraints
 
-These three decisions look like arbitrary choices in the code and are not. Each was
-reached by hitting the failure it avoids.
+These decisions look like arbitrary choices in the code and are not. Each was reached
+by hitting the failure it avoids.
 
 **Topic candidates come from the search connection, never `Topic.repositories`.**
 Adding `orderBy` to `Topic.repositories` makes GitHub return `Something went wrong
@@ -115,8 +115,38 @@ them into one pair and a daily cron leaves entries reaching 8 days against a 7 d
 threshold, because the run that would refresh an entry only fires after it has
 already gone stale.
 
-**`TOPIC_MAX_PAGES` is 2, well below the search ceiling of 10.** Search returns 100
-repositories per page where the retired scraper returned 20, so 10 pages would write
-1,000 projects and 1.8 MB per topic. Two pages reproduce the 200 projects per topic
-that the scraper produced. The star and fork floors discard the tail long before
-result 200, so the extra pages buy nothing and cost 41 MB per sweep instead of 8 MB.
+**Depth is decided per topic, and the two stopping signals get different
+discipline.** A fixed page count cannot serve both `python`, where the 200th
+repository still has 22,000 stars, and `diagram-editor`, which holds 8 repositories
+above 500 stars in total. Paging continues until one of these fires, whichever comes
+first.
+
+- A page whose lowest repository falls under 500 stars ends the topic immediately.
+  Results are sorted by stars descending, so nothing better exists further down. This
+  is a sound stop and needs no confirmation.
+- Two consecutive pages yielding fewer than 25 repositories with at least 50 forks
+  ends the topic. Fork counts are not monotone across pages, so this one needs
+  confirming. Measured recoveries after a first sub-25 page never exceeded 24, which
+  is what the two-page window covers.
+- Ten pages is the default depth. Passing it requires the last two pages to each hold
+  at least 50 gate-passers, judged once at page ten rather than re-checked afterwards.
+- Twenty pages is the hard budget. A topic stopping here is truncated rather than
+  finished, which is why `stop_reason` is stored.
+
+The 50-fork gate is deliberately a constant rather than a per-topic percentile. It
+asserts an absolute bar, that a project has enough independent interest to be worth a
+serious contributor's months. Relativizing it would admit 20-fork projects wherever a
+topic is thin, which is the failure it exists to prevent.
+
+A measured sweep of 22 topics: 18 topics ended on the star floor, 2 on saturation, and
+`python` and `javascript` on the page budget. 107 pages, 155 points of the 5,000 hourly
+budget, 15 minutes, 9,566 projects. `cli` kept exactly the 1,565 repositories that
+`topic:cli stars:>=500` reports, so the paging enumerates the qualifying set exactly.
+
+**Search caps one query at 1,000 results, so depth past that needs a new query.**
+`topic:python` matches 863,000 repositories but reports `hasNextPage: false` at result
+1,000. `iter_topic_repos` hides this: when a query exhausts, it re-enters as
+`stars:<=<last minimum seen>` with a fresh cursor. The bound is inclusive so ties at
+the boundary are not skipped, which costs one duplicate record that URL dedup absorbs.
+A tranche whose ceiling does not decrease ends the topic, otherwise a page tied at one
+star count would re-issue the same query until the budget ran out.
