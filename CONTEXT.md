@@ -93,3 +93,30 @@ identity whenever the source permits.
 - Collection and recommendation require no LLM inference.
 - Persistence exists only for synchronization, reproducibility, explanation, outcomes, and feedback.
 - CLI, MCP, and static output are adapters over application use cases, not catalog-shaped products.
+
+## Collection constraints
+
+These three decisions look like arbitrary choices in the code and are not. Each was
+reached by hitting the failure it avoids.
+
+**Topic candidates come from the search connection, never `Topic.repositories`.**
+Adding `orderBy` to `Topic.repositories` makes GitHub return `Something went wrong
+while executing your query` for any large topic. `python` failed every attempt while
+`editor` and `github-actions` passed, and shrinking the page to 25 repositories did
+not help, so the trigger is the sort rather than the payload size. Dropping
+`orderBy` returns arbitrary order, which cannot rank anything. `search(query:
+"topic:<name> sort:stars-desc", type: REPOSITORY)` sorts correctly, costs the same
+one point per page, and caps at 1,000 results.
+
+**Two staleness thresholds per cache, not one.** A reader refetches at 30 days for
+personal topics and 7 days for project topics. CI refreshes at 25 and 5. The shorter
+pair is what lets a scheduled run act before a reader can see a stale cache. Collapse
+them into one pair and a daily cron leaves entries reaching 8 days against a 7 day
+threshold, because the run that would refresh an entry only fires after it has
+already gone stale.
+
+**`TOPIC_MAX_PAGES` is 2, well below the search ceiling of 10.** Search returns 100
+repositories per page where the retired scraper returned 20, so 10 pages would write
+1,000 projects and 1.8 MB per topic. Two pages reproduce the 200 projects per topic
+that the scraper produced. The star and fork floors discard the tail long before
+result 200, so the extra pages buy nothing and cost 41 MB per sweep instead of 8 MB.

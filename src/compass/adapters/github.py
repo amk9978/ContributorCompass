@@ -10,6 +10,8 @@ GITHUB_API = "https://api.github.com"
 GITHUB_GRAPHQL_API = "https://api.github.com/graphql"
 
 REPOS_PER_PAGE = 100
+SEARCH_RESULT_LIMIT = 1000
+MAX_SEARCH_PAGES = SEARCH_RESULT_LIMIT // REPOS_PER_PAGE
 
 
 class TopicRepoRecord(TypedDict):
@@ -70,20 +72,14 @@ query ($login: String!, $cursor: String) {
 TOPIC_REPOS_QUERY = (
     REPOSITORY_FRAGMENT
     + """
-query ($topic: String!, $cursor: String) {
-  topic(name: $topic) {
-    repositories(
-      first: 100
-      after: $cursor
-      orderBy: {field: STARGAZERS, direction: DESC}
-    ) {
-      nodes {
-        ...RepositoryFields
-      }
-      pageInfo {
-        hasNextPage
-        endCursor
-      }
+query ($searchQuery: String!, $cursor: String) {
+  search(query: $searchQuery, type: REPOSITORY, first: 100, after: $cursor) {
+    nodes {
+      ...RepositoryFields
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
     }
   }
 }
@@ -124,23 +120,26 @@ class GitHubClient:
         self,
         query: str,
         variables: dict[str, Any],
-        container: str,
+        connection_path: tuple[str, ...],
         max_pages: int,
     ) -> Iterator[list[TopicRepoRecord]]:
         cursor: str | None = None
 
         for _ in range(max_pages):
-            data = self.github.graphql(query, {**variables, "cursor": cursor})
-            container_data = data[container]
+            connection: Any = self.github.graphql(query, {**variables, "cursor": cursor})
 
-            if container_data is None:
+            for key in connection_path:
+                if connection is None:
+                    return
+
+                connection = connection[key]
+
+            if connection is None:
                 return
 
-            repositories = container_data["repositories"]
+            yield [build_topic_repo_record(node) for node in connection["nodes"]]
 
-            yield [build_topic_repo_record(node) for node in repositories["nodes"]]
-
-            page_info = repositories["pageInfo"]
+            page_info = connection["pageInfo"]
 
             if not page_info["hasNextPage"]:
                 return
@@ -153,7 +152,7 @@ class GitHubClient:
         for page in self.iter_repositories(
             query=USER_REPOS_QUERY,
             variables={"login": github_handle},
-            container="user",
+            connection_path=("user", "repositories"),
             max_pages=max_pages,
         ):
             records.extend(page)
@@ -167,7 +166,7 @@ class GitHubClient:
     ) -> Iterator[list[TopicRepoRecord]]:
         yield from self.iter_repositories(
             query=TOPIC_REPOS_QUERY,
-            variables={"topic": topic},
-            container="topic",
+            variables={"searchQuery": f"topic:{topic} sort:stars-desc"},
+            connection_path=("search",),
             max_pages=max_pages,
         )

@@ -1,6 +1,7 @@
 .env
 node_modules/
 *.log
+*.json.tmp
 .idea/
 .site/
 .venv/
