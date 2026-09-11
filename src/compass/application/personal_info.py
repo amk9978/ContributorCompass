@@ -1,8 +1,10 @@
+import dataclasses
 import datetime
 import logging
 from collections import defaultdict
+from typing import Any
 
-from compass.adapters import GitHubClient, TopicRepoRecord
+from compass.adapters import GitHubClient, RepositoryEvidence, TopicRepoRecord
 from compass.domain import CollectionStop, TopicCollection, TopicProject
 
 logger = logging.getLogger(__name__)
@@ -17,6 +19,15 @@ EXTENSION_YIELD = 50
 EXTENSION_WINDOW = 2
 DEFAULT_MAX_PAGES = 10
 HARD_MAX_PAGES = 20
+
+EVIDENCE_TIMESTAMPS = ("created_at", "pushed_at", "last_commit_at", "latest_release_at")
+
+
+@dataclasses.dataclass(frozen=True)
+class TopicDiscovery:
+    records: list[TopicRepoRecord]
+    stop_reason: CollectionStop
+    pages_fetched: int
 
 
 def rank_frequencies(frequencies: dict[str, int]) -> list[tuple[str, int]]:
@@ -58,7 +69,22 @@ def get_topics_frequencies(
     return rank_frequencies(frequencies)
 
 
-def build_topic_project(record: TopicRepoRecord) -> TopicProject:
+def evidence_fields(evidence: RepositoryEvidence | None) -> dict[str, Any]:
+    if evidence is None:
+        return {}
+
+    fields: dict[str, Any] = dict(evidence)
+
+    for name in EVIDENCE_TIMESTAMPS:
+        fields[name] = parse_timestamp(fields[name])
+
+    return fields
+
+
+def build_topic_project(
+    record: TopicRepoRecord,
+    evidence: RepositoryEvidence | None,
+) -> TopicProject:
     return TopicProject(
         owner=record["owner"],
         name=record["name"],
@@ -69,6 +95,7 @@ def build_topic_project(record: TopicRepoRecord) -> TopicProject:
         language=record["language"],
         topics=record["topics"],
         updated_at=parse_timestamp(record["updated_at"]),
+        **evidence_fields(evidence),
     )
 
 
@@ -105,8 +132,8 @@ def resolve_stop(
     return None
 
 
-def get_topic_projects(topic: str, github: GitHubClient) -> TopicCollection:
-    projects: list[TopicProject] = []
+def discover_topic_repos(topic: str, github: GitHubClient) -> TopicDiscovery:
+    kept: list[TopicRepoRecord] = []
     seen: set[str] = set()
     recent_yields: list[int] = []
     low_yield_streak = 0
@@ -118,7 +145,7 @@ def get_topic_projects(topic: str, github: GitHubClient) -> TopicCollection:
 
         fresh = [record for record in records if record["url"] not in seen]
         seen.update(record["url"] for record in fresh)
-        projects.extend(build_topic_project(record=record) for record in above_star_floor(fresh))
+        kept.extend(above_star_floor(fresh))
 
         page_yield = count_gate_passers(records)
         recent_yields = [*recent_yields, page_yield][-EXTENSION_WINDOW:]
@@ -141,12 +168,28 @@ def get_topic_projects(topic: str, github: GitHubClient) -> TopicCollection:
             else CollectionStop.EXHAUSTED
         )
 
+    return TopicDiscovery(records=kept, stop_reason=stop, pages_fetched=pages_fetched)
+
+
+def get_topic_projects(topic: str, github: GitHubClient) -> TopicCollection:
+    discovery = discover_topic_repos(topic=topic, github=github)
+    evidence = github.hydrate_repositories([record["node_id"] for record in discovery.records])
+    projects = [
+        build_topic_project(record=record, evidence=evidence.get(record["node_id"]))
+        for record in discovery.records
+    ]
+
     logger.info(
-        "Collected %s projects for topic %s over %s pages, stopped on %s",
+        "Collected %s projects for topic %s over %s pages, stopped on %s, hydrated %s",
         len(projects),
         topic,
-        pages_fetched,
-        stop,
+        discovery.pages_fetched,
+        discovery.stop_reason,
+        len(evidence),
     )
 
-    return TopicCollection(projects=projects, stop_reason=stop, pages_fetched=pages_fetched)
+    return TopicCollection(
+        projects=projects,
+        stop_reason=discovery.stop_reason,
+        pages_fetched=discovery.pages_fetched,
+    )

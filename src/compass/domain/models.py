@@ -30,7 +30,7 @@ class TopicProject(DomainModel):
     updated_at: datetime.datetime | None = None
     pushed_at: datetime.datetime | None = None
 
-    is_archived: bool = False
+    is_archived: bool | None = None
     latest_release_at: datetime.datetime | None = None
 
     open_pr_count: int | None = None
@@ -56,7 +56,7 @@ class TopicProject(DomainModel):
     median_pr_merge_days: float | None = None
     median_pr_first_response_days: float | None = None
 
-    has_issues_enabled: bool = True
+    has_issues_enabled: bool | None = None
     open_issues_count: int | None = None
     open_good_first_issue_count: int | None = None
 

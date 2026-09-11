@@ -150,3 +150,25 @@ budget, 15 minutes, 9,566 projects. `cli` kept exactly the 1,565 repositories th
 the boundary are not skipped, which costs one duplicate record that URL dedup absorbs.
 A tranche whose ceiling does not decrease ends the topic, otherwise a page tied at one
 star count would re-issue the same query until the budget ran out.
+
+**Evidence is hydrated by node ID in batches of 50, never through the search
+fragment.** A search page already spends 8.6 seconds of server time on
+`topic:python`, and every field added to it pushes the query past GitHub's timeout
+at both 100 and 50 per page. `nodes(ids:)` skips the search engine and pays only for
+the fields. The evidence selection on 100 IDs fails every attempt and passes every
+attempt on 50, at 9.5 seconds for the top-100 python repositories, which is the
+heaviest batch GitHub can hand over. `releases { totalCount }` and `codeOfConduct`
+fail alone on 100 and stay null. A batch that still fails after githubkit's three
+retries splits in two and each half is tried once. A half that fails leaves its
+repositories with null evidence instead of failing the topic, since absence of
+evidence is not evidence of unfitness. Hydration costs one point per batch, about
+195 requests for a 9,587-project sweep on top of the 107 search pages, and takes the
+sweep from 15 minutes to 59 because the heavy batches sit at the server timeout and
+each 5xx retry carries backoff. python alone is 18 minutes.
+
+**Every GraphQL call goes through `GitHubClient.graphql`, which retries an empty
+body.** A timed-out query sometimes comes back as a 200 with no body instead of a
+502. githubkit retries 5xx three times with 1, 4 and 9 second backoff but raises
+`pydantic.ValidationError` on the empty body and stops. The wrapper applies the same
+backoff to that case. One such response on a `javascript` search page ended a full
+sweep after 10 topics before the wrapper existed.

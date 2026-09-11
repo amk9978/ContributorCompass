@@ -1,6 +1,6 @@
 from collections.abc import Iterator
 
-from compass.adapters import GitHubClient, TopicRepoRecord
+from compass.adapters import GitHubClient, RepositoryEvidence, TopicRepoRecord
 from compass.application.personal_info import get_topic_projects
 from compass.domain import CollectionStop
 
@@ -11,6 +11,7 @@ def make_page(page_number: int, stars: int, forks: int, gate_passers: int) -> li
     for index in range(100):
         records.append(
             TopicRepoRecord(
+                node_id=f"node-{page_number}-{index}",
                 owner="owner",
                 name=f"repo-{page_number}-{index}",
                 url=f"https://github.com/owner/repo-{page_number}-{index}",
@@ -39,6 +40,9 @@ class FakeGitHub(GitHubClient):
         for page in self.pages[:max_pages]:
             self.pages_served += 1
             yield page
+
+    def hydrate_repositories(self, node_ids: list[str]) -> dict[str, RepositoryEvidence]:
+        return {}
 
 
 def test_saturation_needs_two_consecutive_low_pages() -> None:

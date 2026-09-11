@@ -1,3 +1,3 @@
-from .github import GitHubClient, TopicRepoRecord
+from .github import GitHubClient, RepositoryEvidence, TopicRepoRecord
 
-__all__ = ["GitHubClient", "TopicRepoRecord"]
+__all__ = ["GitHubClient", "RepositoryEvidence", "TopicRepoRecord"]
