@@ -1,8 +1,11 @@
 import logging
+import time
 from collections.abc import Iterator
 from typing import Any, TypedDict
 
+import pydantic
 from githubkit import GitHub
+from githubkit.exception import GitHubException
 
 logger = logging.getLogger(__name__)
 
@@ -11,9 +14,14 @@ GITHUB_GRAPHQL_API = "https://api.github.com/graphql"
 
 REPOS_PER_PAGE = 100
 SEARCH_RESULT_LIMIT = 1000
+HYDRATION_BATCH_SIZE = 50
+HYDRATION_MIN_BATCH_SIZE = 25
+HYDRATION_FAILURES = (GitHubException, pydantic.ValidationError)
+EMPTY_BODY_BACKOFF_SECONDS = (1, 4, 9)
 
 
 class TopicRepoRecord(TypedDict):
+    node_id: str
     owner: str
     name: str
     url: str
@@ -25,8 +33,26 @@ class TopicRepoRecord(TypedDict):
     updated_at: str | None
 
 
+class RepositoryEvidence(TypedDict):
+    created_at: str
+    pushed_at: str | None
+    is_archived: bool
+    has_issues_enabled: bool
+    license_spdx_id: str | None
+    default_branch: str | None
+    last_commit_at: str | None
+    latest_release_at: str | None
+    watchers_count: int
+    open_issues_count: int
+    open_good_first_issue_count: int
+    open_pr_count: int
+    language_bytes: dict[str, int]
+    has_contributing_guide: bool
+
+
 REPOSITORY_FRAGMENT = """
 fragment RepositoryFields on Repository {
+  id
   owner {
     login
   }
@@ -85,6 +111,57 @@ query ($searchQuery: String!, $cursor: String) {
 """
 )
 
+REPOSITORY_EVIDENCE_QUERY = """
+query ($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on Repository {
+      id
+      createdAt
+      pushedAt
+      isArchived
+      hasIssuesEnabled
+      licenseInfo {
+        spdxId
+      }
+      defaultBranchRef {
+        name
+        target {
+          ... on Commit {
+            committedDate
+          }
+        }
+      }
+      latestRelease {
+        publishedAt
+      }
+      watchers {
+        totalCount
+      }
+      openIssues: issues(states: OPEN) {
+        totalCount
+      }
+      goodFirstIssues: issues(states: OPEN, labels: ["good first issue"]) {
+        totalCount
+      }
+      openPullRequests: pullRequests(states: OPEN) {
+        totalCount
+      }
+      languages(first: 10, orderBy: {field: SIZE, direction: DESC}) {
+        edges {
+          size
+          node {
+            name
+          }
+        }
+      }
+      contributingGuide: object(expression: "HEAD:CONTRIBUTING.md") {
+        id
+      }
+    }
+  }
+}
+"""
+
 
 def topic_search_query(topic: str, star_ceiling: int | None = None) -> str:
     query = f"topic:{topic} sort:stars-desc"
@@ -100,6 +177,7 @@ def build_topic_repo_record(node: dict[str, Any]) -> TopicRepoRecord:
     topic_nodes = node["repositoryTopics"]["nodes"]
 
     return TopicRepoRecord(
+        node_id=node["id"],
         owner=node["owner"]["login"],
         name=node["name"],
         url=node["url"],
@@ -109,6 +187,30 @@ def build_topic_repo_record(node: dict[str, Any]) -> TopicRepoRecord:
         language=language["name"] if language else None,
         topics=[entry["topic"]["name"] for entry in topic_nodes],
         updated_at=node["updatedAt"],
+    )
+
+
+def build_repository_evidence(node: dict[str, Any]) -> RepositoryEvidence:
+    license_info = node["licenseInfo"]
+    default_branch = node["defaultBranchRef"]
+    last_commit = default_branch["target"] if default_branch else None
+    latest_release = node["latestRelease"]
+
+    return RepositoryEvidence(
+        created_at=node["createdAt"],
+        pushed_at=node["pushedAt"],
+        is_archived=node["isArchived"],
+        has_issues_enabled=node["hasIssuesEnabled"],
+        license_spdx_id=license_info["spdxId"] if license_info else None,
+        default_branch=default_branch["name"] if default_branch else None,
+        last_commit_at=last_commit.get("committedDate") if last_commit else None,
+        latest_release_at=latest_release["publishedAt"] if latest_release else None,
+        watchers_count=node["watchers"]["totalCount"],
+        open_issues_count=node["openIssues"]["totalCount"],
+        open_good_first_issue_count=node["goodFirstIssues"]["totalCount"],
+        open_pr_count=node["openPullRequests"]["totalCount"],
+        language_bytes={edge["node"]["name"]: edge["size"] for edge in node["languages"]["edges"]},
+        has_contributing_guide=node["contributingGuide"] is not None,
     )
 
 
@@ -124,13 +226,23 @@ class GitHubClient:
     def __exit__(self, *exc_info: object) -> None:
         return None
 
+    def graphql(self, query: str, variables: dict[str, Any]) -> Any:
+        for backoff in EMPTY_BODY_BACKOFF_SECONDS:
+            try:
+                return self.github.graphql(query, variables)
+            except pydantic.ValidationError:
+                logger.warning("GitHub returned an empty GraphQL body, retrying in %ss", backoff)
+                time.sleep(backoff)
+
+        return self.github.graphql(query, variables)
+
     def fetch_connection(
         self,
         query: str,
         variables: dict[str, Any],
         connection_path: tuple[str, ...],
     ) -> Any:
-        connection: Any = self.github.graphql(query, variables)
+        connection: Any = self.graphql(query, variables)
 
         for key in connection_path:
             if connection is None:
@@ -223,3 +335,33 @@ class GitHubClient:
             )
             star_ceiling = next_ceiling
             cursor = None
+
+    def fetch_evidence_batch(self, node_ids: list[str]) -> dict[str, RepositoryEvidence]:
+        response: Any = self.graphql(REPOSITORY_EVIDENCE_QUERY, {"ids": node_ids})
+
+        return {node["id"]: build_repository_evidence(node) for node in response["nodes"] if node}
+
+    def hydrate_batch(self, node_ids: list[str]) -> dict[str, RepositoryEvidence]:
+        try:
+            return self.fetch_evidence_batch(node_ids)
+        except HYDRATION_FAILURES as exc:
+            if len(node_ids) <= HYDRATION_MIN_BATCH_SIZE:
+                logger.warning(
+                    "Leaving %s repositories without evidence after a failed batch: %s",
+                    len(node_ids),
+                    exc,
+                )
+                return {}
+
+        half = len(node_ids) // 2
+        logger.debug("Splitting a failed hydration batch of %s repositories", len(node_ids))
+
+        return {**self.hydrate_batch(node_ids[:half]), **self.hydrate_batch(node_ids[half:])}
+
+    def hydrate_repositories(self, node_ids: list[str]) -> dict[str, RepositoryEvidence]:
+        evidence: dict[str, RepositoryEvidence] = {}
+
+        for start in range(0, len(node_ids), HYDRATION_BATCH_SIZE):
+            evidence.update(self.hydrate_batch(node_ids[start : start + HYDRATION_BATCH_SIZE]))
+
+        return evidence
