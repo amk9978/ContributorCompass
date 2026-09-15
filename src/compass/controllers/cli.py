@@ -5,7 +5,7 @@ import typer
 
 from compass.adapters import GitHubClient
 from compass.application.topics import collect_topic_pages, collect_topics
-from compass.infra import (
+from compass.adapters import (
     PERSONAL_TOPIC_FILE,
     PERSONAL_TOPICS_REFRESH_AFTER,
     PERSONAL_TOPICS_STALE_AFTER,

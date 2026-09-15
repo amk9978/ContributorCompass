@@ -4,7 +4,7 @@ import logging
 from compass.adapters import GitHubClient
 from compass.application.personal_info import get_topic_projects, get_topics_frequencies
 from compass.domain import PersonalTopicsFile, ProjectTopicsFile
-from compass.infra import TopicCache, format_github_handle
+from compass.adapters import TopicCache, format_github_handle
 
 logger = logging.getLogger(__name__)
 
