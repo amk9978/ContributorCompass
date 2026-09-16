@@ -132,19 +132,19 @@ class BucketThresholds(DomainModel):
 class CareerSignalBucketThresholds(BucketThresholds):
     bucket: Bucket = Bucket.CAREER_SIGNAL
     min_stars: int = 5000
-    min_forks: int = 500
+    min_forks: int = 1000
 
 
 class FreshAirBucketThresholds(BucketThresholds):
     bucket: Bucket = Bucket.FRESH_BREEZE
-    min_stars: int = 500
-    min_forks: int = 100
+    min_stars: int = 1000
+    min_forks: int = 200
 
 
 class AlignedBucketThresholds(BucketThresholds):
     bucket: Bucket = Bucket.ALIGNED
-    min_stars: int = 500
-    min_forks: int = 50
+    min_stars: int = 1000
+    min_forks: int = 200
 
 
 class Evaluation(DomainModel):
