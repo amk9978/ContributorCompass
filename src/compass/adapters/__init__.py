@@ -18,8 +18,10 @@ __all__ = [
     "PROJECT_TOPICS_DIR",
     "PROJECT_TOPICS_REFRESH_AFTER",
     "PROJECT_TOPICS_STALE_AFTER",
+    "GitHubClient",
+    "RepositoryEvidence",
     "TopicCache",
+    "TopicRepoRecord",
     "format_github_handle",
     "resolve_github_token",
-    "GitHubClient", "RepositoryEvidence", "TopicRepoRecord"
 ]

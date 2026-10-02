@@ -3,8 +3,6 @@ from typing import Annotated
 
 import typer
 
-from compass.adapters import GitHubClient
-from compass.application.topics import collect_topic_pages, collect_topics
 from compass.adapters import (
     PERSONAL_TOPIC_FILE,
     PERSONAL_TOPICS_REFRESH_AFTER,
@@ -12,9 +10,11 @@ from compass.adapters import (
     PROJECT_TOPICS_DIR,
     PROJECT_TOPICS_REFRESH_AFTER,
     PROJECT_TOPICS_STALE_AFTER,
+    GitHubClient,
     TopicCache,
     resolve_github_token,
 )
+from compass.application.topics import collect_topic_pages, collect_topics
 
 app = typer.Typer()
 cache = TopicCache(personal_file=PERSONAL_TOPIC_FILE, project_dir=PROJECT_TOPICS_DIR)

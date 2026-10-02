@@ -2,10 +2,11 @@ import datetime
 from collections.abc import Iterator
 from typing import Any, cast
 
+import httpx
 import pydantic
 import pytest
-from githubkit import GitHub
-from githubkit.exception import GitHubException
+from githubkit import GitHub, Response
+from githubkit.exception import GitHubException, RequestFailed
 
 from compass.adapters import GitHubClient, TopicRepoRecord
 from compass.adapters.github import build_repository_evidence
@@ -231,3 +232,50 @@ def test_persistent_empty_bodies_fall_through_to_splitting(monkeypatch: pytest.M
 
     assert github.server.batch_sizes == [50, 50, 50, 50, 25, 25]
     assert all(project.pushed_at is not None for project in collection.projects)
+
+
+def bad_gateway_error() -> RequestFailed:
+    request = httpx.Request("POST", "https://api.github.com/graphql")
+    return RequestFailed(Response(httpx.Response(502, request=request), Any))
+
+
+class FlakyGraphQL:
+    def __init__(self, failures: list[Exception]) -> None:
+        self.failures = failures
+        self.calls = 0
+
+    def graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        self.calls += 1
+
+        if self.failures:
+            raise self.failures.pop(0)
+
+        return {"ok": True}
+
+
+def flaky_client(failures: list[Exception]) -> tuple[GitHubClient, FlakyGraphQL]:
+    server = FlakyGraphQL(failures)
+    client = GitHubClient(token="token")
+    client.github = cast(GitHub[Any], server)
+    return client, server
+
+
+def test_bad_gateway_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("compass.adapters.github.time.sleep", lambda seconds: None)
+    client, server = flaky_client([bad_gateway_error(), empty_body_error()])
+
+    assert client.graphql("query", {}) == {"ok": True}
+    assert server.calls == 3
+
+
+def test_client_errors_are_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("compass.adapters.github.time.sleep", lambda seconds: None)
+    request = httpx.Request("POST", "https://api.github.com/graphql")
+    client, server = flaky_client(
+        [RequestFailed(Response(httpx.Response(401, request=request), Any))]
+    )
+
+    with pytest.raises(RequestFailed):
+        client.graphql("query", {})
+
+    assert server.calls == 1

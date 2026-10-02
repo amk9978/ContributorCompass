@@ -5,7 +5,7 @@ from typing import Any, TypedDict
 
 import pydantic
 from githubkit import GitHub
-from githubkit.exception import GitHubException
+from githubkit.exception import GitHubException, RequestFailed
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,8 @@ SEARCH_RESULT_LIMIT = 1000
 HYDRATION_BATCH_SIZE = 50
 HYDRATION_MIN_BATCH_SIZE = 25
 HYDRATION_FAILURES = (GitHubException, pydantic.ValidationError)
-EMPTY_BODY_BACKOFF_SECONDS = (1, 4, 9)
+TRANSIENT_BACKOFF_SECONDS = (1, 4, 9)
+TRANSIENT_STATUS_CODES = frozenset({500, 502, 503, 504})
 
 
 class TopicRepoRecord(TypedDict):
@@ -214,6 +215,13 @@ def build_repository_evidence(node: dict[str, Any]) -> RepositoryEvidence:
     )
 
 
+def is_transient_failure(exc: Exception) -> bool:
+    if isinstance(exc, RequestFailed):
+        return exc.response.status_code in TRANSIENT_STATUS_CODES
+
+    return True
+
+
 class GitHubClient:
     def __init__(self, token: str, timeout: float = 30) -> None:
         self.token = token
@@ -227,11 +235,16 @@ class GitHubClient:
         return None
 
     def graphql(self, query: str, variables: dict[str, Any]) -> Any:
-        for backoff in EMPTY_BODY_BACKOFF_SECONDS:
+        for backoff in TRANSIENT_BACKOFF_SECONDS:
             try:
                 return self.github.graphql(query, variables)
-            except pydantic.ValidationError:
-                logger.warning("GitHub returned an empty GraphQL body, retrying in %ss", backoff)
+            except (pydantic.ValidationError, RequestFailed) as exc:
+                if not is_transient_failure(exc):
+                    raise
+
+                logger.warning(
+                    "GitHub GraphQL request failed transiently (%r), retrying in %ss", exc, backoff
+                )
                 time.sleep(backoff)
 
         return self.github.graphql(query, variables)

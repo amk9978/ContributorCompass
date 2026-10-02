@@ -1,9 +1,8 @@
 import datetime
 
-from compass.adapters import GitHubClient, TopicRepoRecord
+from compass.adapters import GitHubClient, TopicCache, TopicRepoRecord
 from compass.application.topics import collect_topics
 from compass.domain import PersonalTopicsFile, ProjectTopicsFile
-from compass.infra import TopicCache
 
 STALE_AFTER = datetime.timedelta(days=30)
 
